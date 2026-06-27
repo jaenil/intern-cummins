@@ -13,35 +13,39 @@ MIN_TRIP_DURATION_SEC = 1800
 MAX_TRIP_DURATION_SEC = 14400
 
 # CMAPSS distributions (Mean and Standard Deviation)
+# Mapped based on available sensors in the original script or reasonable synthetic defaults
 SENSOR_STATS = {
-    'sensor_2': {'mean': 597.36, 'std': 42.47},
-    'sensor_3': {'mean': 1467.03, 'std': 118.17},
-    'sensor_4': {'mean': 1260.95, 'std': 136.30},
-    'sensor_7': {'mean': 359.72, 'std': 174.13},
-    'sensor_8': {'mean': 2273.82, 'std': 142.42},
-    'sensor_9': {'mean': 8677.55, 'std': 374.65},
-    'sensor_11': {'mean': 44.21, 'std': 3.42},
-    'sensor_12': {'mean': 338.78, 'std': 164.19},
-    'sensor_13': {'mean': 2349.64, 'std': 111.16},
-    'sensor_14': {'mean': 8088.95, 'std': 80.62},
-}
-
-# New Descriptive Sensor Names
-SENSOR_NAMES = {
-    'sensor_2': 'Total temperature at LPC outlet (in °R)',
-    'sensor_3': 'Total temperature at HPC outlet (in °R)',
-    'sensor_4': 'Total temperature at LPT outlet (in °R)',
-    'sensor_7': 'Total pressure at HPC outlet (in psia)',
-    'sensor_8': 'Physical fan speed (in rpm)',
-    'sensor_9': 'Physical core speed (in rpm)',
-    'sensor_11': 'Static pressure at HPC outlet (in psia)',
-    'sensor_12': 'Ratio of fuel flow to Ps30 (in pps/psi)',
-    'sensor_13': 'Corrected fan speed (in rpm)',
-    'sensor_14': 'Corrected core speed (in rpm)'
+    'engine_speed': {'mean': 8677.55, 'std': 374.65},         # Mapped from Physical core speed (Nc, sensor_9)
+    'exhaust_temperature': {'mean': 1260.95, 'std': 136.30},  # Mapped from Total temp at LPT outlet (T50, sensor_4)
+    'boost_pressure': {'mean': 359.72, 'std': 174.13},        # Mapped from Total pressure at HPC outlet (P30, sensor_7)
+    'turbo_speed': {'mean': 2273.82, 'std': 142.42},          # Mapped from Physical fan speed (Nf, sensor_8)
+    'air_fuel_ratio': {'mean': 0.02, 'std': 0.005},           # Mapped from Burner fuel-air ratio (farB)
+    'fuel_rate': {'mean': 150.0, 'std': 15.0},                # Mapped from Fuel flow (Wf) - Synthetic baseline
+    'intake_pressure': {'mean': 14.6, 'std': 0.5},            # Mapped from Pressure at fan inlet (P2) - Synthetic baseline
+    'ambient_temperature': {'mean': 518.67, 'std': 5.0},      # Mapped from Total temp at fan inlet (T2) - Synthetic baseline
 }
 
 # Assign a random drift direction (+1 or -1) to each sensor
 SENSOR_DRIFT_DIR = {s: np.random.choice([-1, 1]) for s in SENSOR_STATS.keys()}
+
+# Unmapped parameters to be initialized as empty columns
+UNMAPPED_PARAMS = [
+    'engine_load',
+    'fuel_pressure',
+    'fuel_level',
+    'actuator_position',
+    'coolant_temperature',
+    'emission_index',
+    'filter_load',
+    'rail_pressure',
+    'ambient_pressure',
+    'system_voltage',
+    'energy_storage_level',
+    'idle_duration',
+    'fluid_level',
+    'fluid_dosing_rate',
+    'fault_list'
+]
 
 def compute_drift(current_hours, total_hours):
     wear = np.clip(current_hours / total_hours, 0, 1)
@@ -57,6 +61,7 @@ for engine_id in range(1, NUM_ENGINES + 1):
     total_hours = total_miles / avg_speed_mph
     
     cumulative_hours = 0.0
+    cumulative_odometer = 0.0
     trip_id = 1
     
     while cumulative_hours < total_hours:
@@ -68,21 +73,22 @@ for engine_id in range(1, NUM_ENGINES + 1):
             duration_sec = duration_hours * 3600.0
             
         cumulative_hours += duration_hours
+        cumulative_odometer += (avg_speed_mph * duration_hours)
         rul = total_hours - cumulative_hours
         drift_mag = compute_drift(cumulative_hours, total_hours)
         
         row = {
-            'engine_id': engine_id,
+            'Engine_number': engine_id,
             'trip_id': trip_id,
             'duration_sec': duration_sec,
-            'cumulative_hours': cumulative_hours,
+            'engine_runtime': cumulative_hours,
+            'Cumulative_odometer': cumulative_odometer,
+            'vehicle_speed': avg_speed_mph
         }
         
         # Generate 4 features per sensor: mean, std, min, max
-        for sensor_id, stats in SENSOR_STATS.items():
-            title_name = SENSOR_NAMES[sensor_id]
-            
-            mu = stats['mean'] + (drift_mag * SENSOR_DRIFT_DIR[sensor_id])
+        for sensor_name, stats in SENSOR_STATS.items():
+            mu = stats['mean'] + (drift_mag * SENSOR_DRIFT_DIR[sensor_name])
             sigma = stats['std']
             
             chunk_mean = np.random.normal(loc=mu, scale=sigma / np.sqrt(duration_sec))
@@ -91,10 +97,14 @@ for engine_id in range(1, NUM_ENGINES + 1):
             chunk_max = chunk_mean + (chunk_std * extreme_factor)
             chunk_min = chunk_mean - (chunk_std * extreme_factor)
             
-            row[f'{title_name}_mean'] = chunk_mean
-            row[f'{title_name}_std'] = chunk_std
-            row[f'{title_name}_min'] = chunk_min
-            row[f'{title_name}_max'] = chunk_max
+            row[f'{sensor_name}_mean'] = chunk_mean
+            row[f'{sensor_name}_std'] = chunk_std
+            row[f'{sensor_name}_min'] = chunk_min
+            row[f'{sensor_name}_max'] = chunk_max
+            
+        # Add empty columns for unmapped parameters
+        for param in UNMAPPED_PARAMS:
+            row[param] = np.nan
             
         row['RUL'] = rul
         records.append(row)
@@ -103,15 +113,15 @@ for engine_id in range(1, NUM_ENGINES + 1):
 df_fleet = pd.DataFrame(records)
 
 # Re-order columns neatly
-metadata_cols = ['engine_id', 'trip_id', 'duration_sec', 'cumulative_hours']
-sensor_cols = [c for c in df_fleet.columns if c not in metadata_cols and c != 'RUL']
+metadata_cols = ['Engine_number', 'trip_id', 'duration_sec', 'engine_runtime', 'Cumulative_odometer', 'vehicle_speed']
+sensor_cols = [c for c in df_fleet.columns if c not in metadata_cols and c not in UNMAPPED_PARAMS and c != 'RUL']
 target_col = ['RUL']
 
-df_fleet = df_fleet[metadata_cols + sorted(sensor_cols) + target_col]
+df_fleet = df_fleet[metadata_cols + sorted(sensor_cols) + UNMAPPED_PARAMS + target_col]
 
 # --- Train / Test Split ---
-train_df = df_fleet[df_fleet['engine_id'] <= 80]
-test_df = df_fleet[df_fleet['engine_id'] > 80]
+train_df = df_fleet[df_fleet['Engine_number'] <= 80]
+test_df = df_fleet[df_fleet['Engine_number'] > 80]
 
 train_path = "train_fleet_data.csv"
 test_path = "test_fleet_data.csv"
