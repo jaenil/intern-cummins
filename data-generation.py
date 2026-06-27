@@ -107,6 +107,15 @@ for engine_id in range(1, NUM_ENGINES + 1):
             row[param] = np.nan
             
         row['RUL'] = rul
+        if rul > 2000:
+            row['RUL_class'] = 'perfect'
+        elif rul > 1000:
+            row['RUL_class'] = 'good'
+        elif rul > 500:
+            row['RUL_class'] = 'bad'
+        else:
+            row['RUL_class'] = 'worse'
+            
         records.append(row)
         trip_id += 1
 
@@ -115,7 +124,7 @@ df_fleet = pd.DataFrame(records)
 # Re-order columns neatly
 metadata_cols = ['Engine_number', 'trip_id', 'duration_sec', 'engine_runtime', 'Cumulative_odometer', 'vehicle_speed']
 sensor_cols = [c for c in df_fleet.columns if c not in metadata_cols and c not in UNMAPPED_PARAMS and c != 'RUL']
-target_col = ['RUL']
+target_col = ['RUL', 'RUL_class']
 
 df_fleet = df_fleet[metadata_cols + sorted(sensor_cols) + UNMAPPED_PARAMS + target_col]
 
