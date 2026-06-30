@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 
-# Set seed for reproducibility
 np.random.seed(42)
 
 # --- Fleet Configuration ---
@@ -25,8 +24,8 @@ SENSOR_STATS = {
     'ambient_temperature': {'mean': 518.67, 'std': 5.0},      # Mapped from Total temp at fan inlet (T2) - Synthetic baseline
 }
 
-# Assign a random drift direction (+1 or -1) to each sensor
-SENSOR_DRIFT_DIR = {s: np.random.choice([-1, 1]) for s in SENSOR_STATS.keys()}
+#drift will always increase as the engine_runtime increases
+SENSOR_DRIFT_DIR = 1
 
 # Unmapped parameters to be initialized as empty columns
 UNMAPPED_PARAMS = [
@@ -52,7 +51,6 @@ def compute_drift(current_hours, total_hours):
     return MAX_DRIFT * (wear ** 2)
 
 records = []
-print(f"Generating synthetic fleet dataset for {NUM_ENGINES} engines...")
 
 for engine_id in range(1, NUM_ENGINES + 1):
     avg_speed_mph = np.random.uniform(MIN_SPEED_MPH, MAX_SPEED_MPH)
@@ -88,7 +86,7 @@ for engine_id in range(1, NUM_ENGINES + 1):
         
         # Generate 4 features per sensor: mean, std, min, max
         for sensor_name, stats in SENSOR_STATS.items():
-            mu = stats['mean'] + (drift_mag * SENSOR_DRIFT_DIR[sensor_name])
+            mu = stats['mean'] + (drift_mag * SENSOR_DRIFT_DIR)
             sigma = stats['std']
             
             chunk_mean = np.random.normal(loc=mu, scale=sigma / np.sqrt(duration_sec))
@@ -121,7 +119,7 @@ for engine_id in range(1, NUM_ENGINES + 1):
 
 df_fleet = pd.DataFrame(records)
 
-# Re-order columns neatly
+# Re-order columns
 metadata_cols = ['Engine_number', 'trip_id', 'duration_sec', 'engine_runtime', 'Cumulative_odometer', 'vehicle_speed']
 sensor_cols = [c for c in df_fleet.columns if c not in metadata_cols and c not in UNMAPPED_PARAMS and c != 'RUL']
 target_col = ['RUL', 'RUL_class']
