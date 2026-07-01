@@ -27,8 +27,25 @@ SENSOR_STATS = {
 #drift will always increase as the engine_runtime increases
 SENSOR_DRIFT_DIR = 1
 
-# Unmapped parameters to be initialized as empty columns
-UNMAPPED_PARAMS = [
+MAPPED_PARAMS_STATS = {
+    'engine_load': {'mean': 31.8, 'std': 17.2, 'min': -5.2, 'max': 104.5},
+    'fuel_pressure': {'mean': 548.2, 'std': 285.6, 'min': 0.0, 'max': 735.8},
+    'fuel_level': {'mean': 72.4, 'std': 68.3, 'min': -105.0, 'max': 8970.2},
+    'actuator_position': {'mean': 2.1, 'std': 6.9, 'min': -12.5, 'max': 105.3},
+    'coolant_temperature': {'mean': 78.9, 'std': 19.2, 'min': -42.3, 'max': 176.1},
+    'emission_index': {'mean': 1.02, 'std': 0.12, 'min': 0.65, 'max': 1.58},
+    'filter_load': {'mean': 4.9, 'std': 5.7, 'min': -9.8, 'max': 118.4},
+    'rail_pressure': {'mean': 1012.5, 'std': 301.1, 'min': -315.0, 'max': 3150.5},
+    'ambient_pressure': {'mean': 24.3, 'std': 17.8, 'min': -65.0, 'max': 10250.0},
+    'system_voltage': {'mean': 701.4, 'std': 38.4, 'min': 0.0, 'max': 780.5},
+    'energy_storage_level': {'mean': 76.8, 'std': 19.5, 'min': 0.0, 'max': 101.8},
+    'idle_duration': {'mean': 1425.0, 'std': 7125.0, 'min': 0.0, 'max': 1425000.0},
+    'fluid_level': {'mean': 73.5, 'std': 23.7, 'min': 0.0, 'max': 104.2},
+    'fluid_dosing_rate': {'mean': 33.1, 'std': 2.2, 'min': 4.5, 'max': 63.7},
+}
+
+# Unmapped parameters to be initialized or generated
+MAPPED_PARAMS = [
     'engine_load',
     'fuel_pressure',
     'fuel_level',
@@ -100,9 +117,14 @@ for engine_id in range(1, NUM_ENGINES + 1):
             row[f'{sensor_name}_min'] = chunk_min
             row[f'{sensor_name}_max'] = chunk_max
             
-        # Add empty columns for unmapped parameters
-        for param in UNMAPPED_PARAMS:
-            row[param] = np.nan
+        # Generate synthetic data for unmapped parameters using distribution stats
+        for param in MAPPED_PARAMS:
+            if param in MAPPED_PARAMS_STATS:
+                stats = MAPPED_PARAMS_STATS[param]
+                val = np.random.normal(loc=stats['mean'], scale=stats['std'])
+                row[param] = np.clip(val, stats['min'], stats['max'])
+            else:
+                row[param] = np.nan
             
         row['RUL'] = rul
         if rul > 2000:
@@ -121,10 +143,10 @@ df_fleet = pd.DataFrame(records)
 
 # Re-order columns
 metadata_cols = ['Engine_number', 'trip_id', 'duration_sec', 'engine_runtime', 'Cumulative_odometer', 'vehicle_speed']
-sensor_cols = [c for c in df_fleet.columns if c not in metadata_cols and c not in UNMAPPED_PARAMS and c != 'RUL']
+sensor_cols = [c for c in df_fleet.columns if c not in metadata_cols and c not in MAPPED_PARAMS and c != 'RUL']
 target_col = ['RUL', 'RUL_class']
 
-df_fleet = df_fleet[metadata_cols + sorted(sensor_cols) + UNMAPPED_PARAMS + target_col]
+df_fleet = df_fleet[metadata_cols + sorted(sensor_cols) + MAPPED_PARAMS + target_col]
 
 # --- Train / Test Split ---
 train_df = df_fleet[df_fleet['Engine_number'] <= 80]
