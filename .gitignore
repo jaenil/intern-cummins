@@ -1,7 +1,6 @@
-./train_fleet_data.csv
-./test_fleet_data.csv
 CMAPSSData/
 venv/
-best_rul_classifier_pipeline.pkl
-best_rul_regressor_pipeline.pkl
-logs.log
+__pycache__/
+*.csv
+*.pkl
+*.log

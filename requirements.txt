@@ -1,3 +1,7 @@
 pandas
 numpy
-pycaret
+matplotlib
+scikit-learn
+scipy
+pycaret==3.3.2
+seaborn

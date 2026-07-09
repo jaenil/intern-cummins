@@ -2,8 +2,8 @@ import pandas as pd
 from pycaret.classification import setup, compare_models, predict_model, save_model
 
 def main():
-    train_df = pd.read_csv('train_fleet_data.csv')
-    test_df = pd.read_csv('test_fleet_data.csv')
+    train_df = pd.read_csv('../data-generation/train_fleet_data.csv')
+    test_df = pd.read_csv('../data-generation/test_fleet_data.csv')
     
     ignore_cols = ['Engine_number', 'trip_id', 'RUL']
     clf_setup = setup(
@@ -18,7 +18,7 @@ def main():
     )
     
     print("Comparing models")
-    best_model = compare_models(sort='Accuracy') # Sorting by Accuracy
+    best_model = compare_models(include=['lightgbm', 'lr', 'dt'], sort='Accuracy') # Sorting by Accuracy
     print(f"Best Classifier Model : {best_model}")
     
     print("\nPredicting on test data")
