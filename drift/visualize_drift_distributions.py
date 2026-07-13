@@ -5,9 +5,9 @@ from scipy.stats import gaussian_kde
 from evaluate_drift_impact import DRIFT_CONFIG
 
 # ── Configuration ────────────────────────────────────────────────────────────
-SEVERITIES   = [0, 4, 9]                # clean, moderate, severe
-COLORS       = ['#2196F3', '#FF9800', '#F44336']   # blue, orange, red
-LABELS       = ['Severity 0 (Clean)', 'Severity 4 (Moderate)', 'Severity 9 (Severe)']
+SEVERITIES   = [0, 3, 5, 9]                # clean, low, moderate, severe
+COLORS       = ['#2196F3', '#4CAF50', '#FF9800', '#F44336']   # blue, green, orange, red
+LABELS       = ['Severity 0 (Clean)', 'Severity 3 (Low)', 'Severity 5 (Moderate)', 'Severity 9 (Severe)']
 ALPHA_HIST   = 0.30
 ALPHA_KDE    = 0.90
 OUTPUT_DIR   = '.'

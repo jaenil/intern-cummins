@@ -11,8 +11,6 @@ MAX_DRIFT_PERCENT = 0.15
 MIN_TRIP_DURATION_SEC = 1800
 MAX_TRIP_DURATION_SEC = 14400
 
-# CMAPSS distributions (Mean, Standard Deviation, and Drift Direction)
-
 MAPPED_PARAMS_STATS = {
     'engine_load': {'mean': 31.8, 'std': 17.2, 'min': -5.2, 'max': 104.5, 'drift_dir': 1},
     'fuel_pressure': {'mean': 548.2, 'std': 285.6, 'min': 0.0, 'max': 735.8, 'drift_dir': 0},

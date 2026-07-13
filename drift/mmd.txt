@@ -1,0 +1,328 @@
+import numpy as np
+from scipy.spatial.distance import pdist
+from sklearn.metrics.pairwise import rbf_kernel
+from joblib import Parallel, delayed
+import warnings
+warnings.filterwarnings('ignore')
+
+
+class MMDDriftDetector:
+    """
+    Fully Automated MMD Drift Detector.
+    
+    Simply call:
+        detector = MMDDriftDetector()
+        result = detector.run(X_ref, X_new)
+    
+    Everything is handled internally:
+      - Bandwidth selection (median heuristic)
+      - Kernel matrix computation (cached)
+      - Permutation testing (parallel)
+      - Auto distance threshold from null distribution
+      - Combined decision (p-value + distance + z-score)
+      - Severity assessment
+    """
+    
+    def __init__(
+        self,
+        kernel='rbf',
+        bandwidth='median',
+        n_permutations=1000,
+        p_threshold=0.05,
+        distance_threshold='auto',
+        z_threshold=3.0,
+        combine_rule='all',           # 'all' | 'majority' | 'any'
+        subsample_size=2000,          # auto-subsamples large data
+        n_jobs=-1,
+        random_state=42,
+        verbose=True,
+    ):
+        self.kernel = kernel
+        self.bandwidth = bandwidth
+        self.n_permutations = n_permutations
+        self.p_threshold = p_threshold
+        self.distance_threshold = distance_threshold
+        self.z_threshold = z_threshold
+        self.combine_rule = combine_rule
+        self.subsample_size = subsample_size
+        self.n_jobs = n_jobs
+        self.random_state = random_state
+        self.verbose = verbose
+    
+    # ------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------
+    @staticmethod
+    def _prepare(X):
+        X = np.asarray(X, dtype=np.float64)
+        if X.ndim == 1:
+            X = X.reshape(-1, 1)
+        return X
+    
+    @staticmethod
+    def _median_heuristic(X, Y):
+        Z = np.vstack([X, Y])
+        if Z.shape[0] > 1000:
+            idx = np.random.choice(Z.shape[0], 1000, replace=False)
+            Z = Z[idx]
+        dists = pdist(Z, metric='sqeuclidean')
+        med = np.median(dists)
+        return np.sqrt(med / 2.0) if med > 0 else 1.0
+    
+    def _kernel_matrix(self, Z, sigma):
+        gamma = 1.0 / (2.0 * sigma ** 2)
+        return rbf_kernel(Z, Z, gamma=gamma)
+    
+    @staticmethod
+    def _mmd2_unbiased(K, m):
+        n = K.shape[0] - m
+        K_xx, K_yy, K_xy = K[:m, :m], K[m:, m:], K[:m, m:]
+        sum_xx = (K_xx.sum() - np.trace(K_xx)) / (m * (m - 1))
+        sum_yy = (K_yy.sum() - np.trace(K_yy)) / (n * (n - 1))
+        sum_xy = K_xy.sum() / (m * n)
+        return sum_xx + sum_yy - 2 * sum_xy
+    
+    def _permutation_worker(self, K, m, n_perms, seed):
+        rng = np.random.default_rng(seed)
+        N = K.shape[0]
+        stats = np.empty(n_perms)
+        for i in range(n_perms):
+            perm = rng.permutation(N)
+            stats[i] = self._mmd2_unbiased(K[np.ix_(perm, perm)], m)
+        return stats
+    
+    @staticmethod
+    def _mean_distance(X, Y):
+        mu_x, mu_y = X.mean(axis=0), Y.mean(axis=0)
+        pooled = np.sqrt((X.std(axis=0) ** 2 + Y.std(axis=0) ** 2) / 2) + 1e-8
+        return float(np.linalg.norm((mu_x - mu_y) / pooled))
+    
+    @staticmethod
+    def _covariance_distance(X, Y):
+        cov_x, cov_y = np.cov(X, rowvar=False), np.cov(Y, rowvar=False)
+        if cov_x.ndim == 0:  # 1-D case
+            return float(abs(cov_x - cov_y) / (abs(cov_x) + 1e-8))
+        return float(np.linalg.norm(cov_x - cov_y, 'fro') /
+                     (np.linalg.norm(cov_x, 'fro') + 1e-8))
+    
+    # ------------------------------------------------------------
+    # MAIN — ONE-CALL DETECTION
+    # ------------------------------------------------------------
+    def run(self, X_ref, X_new):
+        """
+        Perform full MMD drift detection pipeline.
+        
+        Parameters
+        ----------
+        X_ref : array-like  (n_ref, n_features)   Reference data
+        X_new : array-like  (n_new, n_features)   New data to test
+        
+        Returns
+        -------
+        dict with full results and decision
+        """
+        # ---- 1. Prepare data ----
+        X = self._prepare(X_ref)
+        Y = self._prepare(X_new)
+        
+        if X.shape[1] != Y.shape[1]:
+            raise ValueError(
+                f"Feature dimension mismatch: X_ref has {X.shape[1]} features, "
+                f"X_new has {Y.shape[1]}"
+            )
+        
+        rng = np.random.default_rng(self.random_state)
+        
+        # ---- 2. Auto-subsample if too large ----
+        if self.subsample_size is not None:
+            if X.shape[0] > self.subsample_size:
+                X = X[rng.choice(X.shape[0], self.subsample_size, replace=False)]
+            if Y.shape[0] > self.subsample_size:
+                Y = Y[rng.choice(Y.shape[0], self.subsample_size, replace=False)]
+        
+        m = X.shape[0]
+        
+        # ---- 3. Bandwidth ----
+        sigma = (self._median_heuristic(X, Y)
+                 if self.bandwidth == 'median' else float(self.bandwidth))
+        
+        # ---- 4. Kernel matrix (cached) ----
+        Z = np.vstack([X, Y])
+        K = self._kernel_matrix(Z, sigma)
+        
+        # ---- 5. Observed MMD² ----
+        mmd2_obs = self._mmd2_unbiased(K, m)
+        
+        # ---- 6. Permutation null distribution (parallel) ----
+        if self.n_jobs == 1 or self.n_permutations < 50:
+            perm_stats = self._permutation_worker(K, m, self.n_permutations,
+                                                  self.random_state)
+        else:
+            n_workers = 8 if self.n_jobs == -1 else self.n_jobs
+            per_w = self.n_permutations // n_workers
+            rem = self.n_permutations % n_workers
+            seeds = rng.integers(0, 2**31 - 1, size=n_workers)
+            counts = [per_w + (1 if i < rem else 0) for i in range(n_workers)]
+            results = Parallel(n_jobs=n_workers)(
+                delayed(self._permutation_worker)(K, m, counts[i], seeds[i])
+                for i in range(n_workers) if counts[i] > 0
+            )
+            perm_stats = np.concatenate(results)
+        
+        # ---- 7. Null distribution stats ----
+        null_mean = float(np.mean(perm_stats))
+        null_std = float(np.std(perm_stats)) + 1e-12
+        
+        # ---- 8. Compute all decision metrics ----
+        p_value = (np.sum(perm_stats >= mmd2_obs) + 1) / (len(perm_stats) + 1)
+        mmd_distance = float(np.sqrt(max(mmd2_obs, 0)))
+        z_score = (mmd2_obs - null_mean) / null_std
+        auto_dist_thr = float(np.sqrt(max(np.percentile(perm_stats, 95), 0)))
+        dist_thr = (auto_dist_thr if self.distance_threshold == 'auto'
+                    else float(self.distance_threshold))
+        
+        # ---- 9. Extra distance signals ----
+        mean_dist = self._mean_distance(X, Y)
+        cov_dist = self._covariance_distance(X, Y)
+        
+        # ---- 10. Combined decision ----
+        c_p    = p_value < self.p_threshold
+        c_dist = mmd_distance > dist_thr
+        c_z    = z_score > self.z_threshold
+        criteria = np.array([c_p, c_dist, c_z])
+        
+        if self.combine_rule == 'all':
+            drift = bool(criteria.all())
+        elif self.combine_rule == 'any':
+            drift = bool(criteria.any())
+        elif self.combine_rule == 'majority':
+            drift = bool(criteria.sum() >= 2)
+        else:
+            raise ValueError(f"Unknown combine_rule: {self.combine_rule}")
+        
+        n_trig = int(criteria.sum())
+        severity = ['no_drift', 'weak', 'moderate', 'strong'][n_trig]
+        
+        result = {
+            'drift_detected': drift,
+            'severity': severity,
+            'n_criteria_triggered': n_trig,
+            
+            'mmd2': float(mmd2_obs),
+            'mmd_distance': mmd_distance,
+            'p_value': float(p_value),
+            'z_score': float(z_score),
+            
+            'mean_distance': mean_dist,
+            'covariance_distance': cov_dist,
+            
+            'thresholds': {
+                'p_threshold': self.p_threshold,
+                'distance_threshold': float(dist_thr),
+                'z_threshold': self.z_threshold,
+            },
+            'criteria': {
+                'pvalue_triggered':   bool(c_p),
+                'distance_triggered': bool(c_dist),
+                'zscore_triggered':   bool(c_z),
+            },
+            'null_distribution': {
+                'mean': null_mean,
+                'std': null_std,
+                'auto_distance_threshold': auto_dist_thr,
+            },
+            'config': {
+                'sigma': float(sigma),
+                'n_permutations': len(perm_stats),
+                'combine_rule': self.combine_rule,
+                'n_ref_used': m,
+                'n_new_used': Y.shape[0],
+            },
+        }
+        
+        if self.verbose:
+            self._print_report(result)
+        
+        return result
+    
+    # Alias so both .run() and .detect() work
+    def detect(self, X_ref, X_new):
+        return self.run(X_ref, X_new)
+    
+    # ------------------------------------------------------------
+    # Pretty report
+    # ------------------------------------------------------------
+    @staticmethod
+    def _print_report(res):
+        line = "=" * 60
+        print(line)
+        print(" MMD DRIFT DETECTION REPORT")
+        print(line)
+        print(f"  Drift detected     : {res['drift_detected']}")
+        print(f"  Severity           : {res['severity'].upper()}")
+        print(f"  Criteria triggered : {res['n_criteria_triggered']} / 3")
+        print("-" * 60)
+        print(f"  MMD² statistic     : {res['mmd2']:.6f}")
+        print(f"  MMD distance       : {res['mmd_distance']:.6f}  "
+              f"(thr: {res['thresholds']['distance_threshold']:.6f})  "
+              f"{'✔' if res['criteria']['distance_triggered'] else '✘'}")
+        print(f"  p-value            : {res['p_value']:.4f}       "
+              f"(thr: {res['thresholds']['p_threshold']})       "
+              f"{'✔' if res['criteria']['pvalue_triggered'] else '✘'}")
+        print(f"  z-score            : {res['z_score']:.3f}       "
+              f"(thr: {res['thresholds']['z_threshold']})       "
+              f"{'✔' if res['criteria']['zscore_triggered'] else '✘'}")
+        print("-" * 60)
+        print(f"  Mean distance (std): {res['mean_distance']:.4f}")
+        print(f"  Cov distance (rel) : {res['covariance_distance']:.4f}")
+        print(f"  Bandwidth (sigma)  : {res['config']['sigma']:.4f}")
+        print(f"  Samples used       : ref={res['config']['n_ref_used']}, "
+              f"new={res['config']['n_new_used']}")
+        print(f"  Permutations       : {res['config']['n_permutations']}")
+        print(line)
+
+
+# ============================================================
+# USAGE 
+# ============================================================
+if __name__ == "__main__":
+    rng = np.random.default_rng(42)
+    
+    # Create the detector ONCE with your preferred config
+    detector = MMDDriftDetector(
+        n_permutations=500,
+        combine_rule='all',       
+        verbose=True,
+    )
+    
+    # ---- Case 1: No drift ----
+    print("\n\n### CASE 1: NO DRIFT ###")
+    X_ref = rng.normal(0, 1, size=(500, 10))
+    X_new = rng.normal(0, 1, size=(500, 10))
+    detector.run(X_ref, X_new)     # <-- ONE CALL, done
+    
+    # ---- Case 2: Tiny drift (should NOT trigger with strict rule) ----
+    print("\n\n### CASE 2: TINY DRIFT (false-alarm test) ###")
+    X_new = rng.normal(0.05, 1, size=(500, 10))
+    detector.run(X_ref, X_new)
+    
+    # ---- Case 3: Moderate drift ----
+    print("\n\n### CASE 3: MODERATE DRIFT ###")
+    X_new = rng.normal(0.3, 1, size=(500, 10))
+    detector.run(X_ref, X_new)
+    
+    # ---- Case 4: Strong drift ----
+    print("\n\n### CASE 4: STRONG DRIFT ###")
+    X_new = rng.normal(1.0, 1, size=(500, 10))
+    detector.run(X_ref, X_new)
+    
+    # ---- Case 5: Covariance drift ----
+    print("\n\n### CASE 5: COVARIANCE DRIFT ###")
+    X_new = rng.normal(0, 2.0, size=(500, 10))
+    detector.run(X_ref, X_new)
+    
+    # ---- Case 6: Large dataset (auto-subsampled) ----
+    print("\n\n### CASE 6: LARGE DATASET (auto-subsampled) ###")
+    X_big_ref = rng.normal(0, 1, size=(20000, 30))
+    X_big_new = rng.normal(0.2, 1, size=(20000, 30))
+    detector.run(X_big_ref, X_big_new)
