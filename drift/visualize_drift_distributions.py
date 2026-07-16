@@ -10,7 +10,7 @@ COLORS       = ['#2196F3', '#4CAF50', '#FF9800', '#F44336']   # blue, green, ora
 LABELS       = ['Severity 0 (Clean)', 'Severity 3 (Low)', 'Severity 5 (Moderate)', 'Severity 9 (Severe)']
 ALPHA_HIST   = 0.30
 ALPHA_KDE    = 0.90
-OUTPUT_DIR   = '.'
+OUTPUT_DIR   = 'results'
 
 # ── KDE helper ────────────────────────────────────────────────────────────────
 def plot_kde_hist(ax, data, color, label, bins=60):

@@ -26,8 +26,8 @@ def main():
     print(predictions.head())
     
     print("\nSaving classification model...")
-    save_model(best_model, 'best_rul_classifier_pipeline')
-    print("Saved to best_rul_classifier_pipeline.pkl")
+    save_model(best_model, 'results/best_rul_classifier_pipeline')
+    print("Saved to results/best_rul_classifier_pipeline.pkl")
 
 if __name__ == '__main__':
     main()

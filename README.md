@@ -36,9 +36,17 @@ The scripts must be executed in a specific order, as the models depend on the ge
 Run the data generation script to synthesize irregular time-series data for 100 engines. This script injects an upward sensor drift bias over simulated operating hours and automatically maps continuous RUL into 4 distinct classes (`perfect`, `good`, `bad`, `worse`).
 
 ```bash
+cd data-generation
 python3 data-generation.py
+cd ..
 ```
 *Output: `train_fleet_data.csv` and `test_fleet_data.csv`*
+
+---
+**Note:** The following scripts (Steps 2-7) must be run from inside the `ml-models` directory:
+```bash
+cd ml-models
+```
 
 ### Step 2: Train the Regressor Model (Continuous RUL)
 This script uses PyCaret to automatically build, compare, and select the best regression model (e.g., Random Forest) for predicting exact Remaining Useful Life (RUL) hours.
@@ -55,5 +63,35 @@ This script uses PyCaret to automatically build, compare, and select the best cl
 python3 train_classifier.py
 ```
 *Output: Evaluates model Accuracy and saves `best_rul_classifier_pipeline.pkl`*
+
+---
+
+### Step 4: Validate the RL Environment
+This script checks the custom Gymnasium environment for compliance with the standard API.
+
+```bash
+python3 validate_env.py
+```
+
+### Step 5: Run Baseline Benchmark
+This script evaluates the default PyCaret model's performance on the continuous data stream without retraining.
+
+```bash
+python3 baseline_benchmark.py
+```
+
+### Step 6: Train the RL Agent
+This script trains a Tabular Q-Learning agent to optimize retraining decisions over multiple episodes.
+
+```bash
+python3 tabular_q_agent.py
+```
+
+### Step 7: Evaluate the RL Agent
+This script evaluates the trained agent's retraining policy against the test data stream.
+
+```bash
+python3 evaluate_agent.py
+```
 
 ---

@@ -20,7 +20,7 @@ def main():
     )
     
     print("Comparing models...")
-    best_model = compare_models(include=['lightgbm', 'lr', 'dt'], sort='MAE')
+    best_model = compare_models(include=['lr'], sort='MAE')
     print(f"Best Regressor Model found: {best_model}")
     
     print("\nPredicting on test data...")
@@ -28,8 +28,8 @@ def main():
     print(predictions.head())
     
     print("\nSaving regression model...")
-    save_model(best_model, 'best_rul_regressor_pipeline')
-    print("Saved to best_rul_regressor_pipeline.pkl")
+    save_model(best_model, 'results/best_rul_regressor_pipeline')
+    print("Saved to results/best_rul_regressor_pipeline.pkl")
 
 if __name__ == '__main__':
     main()

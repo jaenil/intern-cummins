@@ -538,7 +538,7 @@ def plot_multivariate_drifts(results, severities):
     
     ax1.grid(True, linestyle='--', alpha=0.7)
     
-    fig.savefig("multivariate_drift_metrics.png", dpi=300, bbox_inches='tight')
+    fig.savefig("results/multivariate_drift_metrics.png", dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 def plot_model_drifts_grid(all_results, severities, model_type):
@@ -563,7 +563,7 @@ def plot_model_drifts_grid(all_results, severities, model_type):
         ax.set_xticks(severities)
         
     fig.tight_layout()
-    filename = "regressor_drifts_grid.png" if is_reg else "classifier_drifts_grid.png"
+    filename = "results/regressor_drifts_grid.png" if is_reg else "results/classifier_drifts_grid.png"
     fig.savefig(filename, dpi=200, bbox_inches='tight')
     plt.close(fig)
 
@@ -600,7 +600,7 @@ def plot_summary_panel(all_results, severities):
     axes[1].legend(fontsize=10)
     
     fig.tight_layout()
-    fig.savefig("drift_impact_summary.png", dpi=300, bbox_inches='tight')
+    fig.savefig("results/drift_impact_summary.png", dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 def main():
@@ -617,6 +617,30 @@ def main():
         print(f"Evaluating: {drift_name}")
         mae, acc = evaluate_single_drift(cfg['fn'], cfg['col'], test_df, reg_model, clf_model, severities)
         all_results[drift_name] = {'mae': mae, 'acc': acc, 'desc': cfg['desc']}
+
+    print("Generating chronological streaming drift dataset...")
+    severities_fine = np.arange(0, 10.5, 0.5)
+    n_chunks = len(severities_fine)
+    chunk_size = len(test_df) // n_chunks
+    
+    chunks = []
+    for i, s in enumerate(severities_fine):
+        start_idx = i * chunk_size
+        end_idx = (i + 1) * chunk_size if i < n_chunks - 1 else len(test_df)
+        
+        df_chunk = test_df.iloc[start_idx:end_idx].copy()
+        
+        if s > 0:
+            for drift_name, cfg in DRIFT_CONFIG.items():
+                df_chunk = cfg['fn'](df_chunk, cfg['col'], s)
+                
+        chunks.append(df_chunk)
+        
+    streaming_df = pd.concat(chunks, ignore_index=True)
+    filename = "../data-generation/streaming_test_data.csv"
+    streaming_df.to_csv(filename, index=False)
+    print(f"Saved {filename} with shape {streaming_df.shape}")
+
 
     
     # Multivariate Evaluation
