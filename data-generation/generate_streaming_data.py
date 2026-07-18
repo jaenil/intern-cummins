@@ -6,21 +6,23 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'drift')))
 from evaluate_drift_impact import DRIFT_CONFIG
 
-def main():
-    print("Loading clean test fleet data...")
-    test_df = pd.read_csv('../data-generation/test_fleet_data.csv')
-    
-    print("Generating chronological streaming drift dataset...")
-    severities_fine = np.arange(0, 10.5, 0.5)
-    n_chunks = len(severities_fine)
-    chunk_size = len(test_df) // n_chunks
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'ml-models')))
+from shared_config import append_dfs_with_days
+
+def generate_streaming_dataset(test_df: pd.DataFrame, severities: np.ndarray, output_path: str, seed: int = 42) -> pd.DataFrame:
+    n_chunks = len(severities)
     
     chunks = []
-    for i, s in enumerate(severities_fine):
-        start_idx = i * chunk_size
-        end_idx = (i + 1) * chunk_size if i < n_chunks - 1 else len(test_df)
-        
-        df_chunk = test_df.iloc[start_idx:end_idx].copy()
+    for i, s in enumerate(severities):
+        # We need to take the i-th fraction of rows for EVERY engine
+        chunk_list = []
+        for engine, group in test_df.groupby('Engine_number'):
+            engine_chunk_size = len(group) // n_chunks
+            start_idx = i * engine_chunk_size
+            end_idx = (i + 1) * engine_chunk_size if i < n_chunks - 1 else len(group)
+            chunk_list.append(group.iloc[start_idx:end_idx].copy())
+            
+        df_chunk = pd.concat(chunk_list, ignore_index=True)
         
         if s > 0:
             for drift_name, cfg in DRIFT_CONFIG.items():
@@ -28,10 +30,23 @@ def main():
                 
         chunks.append(df_chunk)
         
-    streaming_df = pd.concat(chunks, ignore_index=True)
-    filename = "../data-generation/streaming_test_data.csv"
-    streaming_df.to_csv(filename, index=False)
-    print(f"Saved {filename} with shape {streaming_df.shape}")
+    streaming_df = append_dfs_with_days(chunks, engine_col='Engine_number')
+    streaming_df = streaming_df.sort_values('day').reset_index(drop=True)
+    streaming_df.to_csv(output_path, index=False)
+    print(f"Saved {output_path} with shape {streaming_df.shape}")
+    return streaming_df
+
+def main():
+    print("Loading clean test fleet data...")
+    test_df = pd.read_csv('../data-generation/test_fleet_data.csv')
+    
+    print("Generating training streaming dataset (fine drift)...")
+    severities_fine = np.arange(0, 10.5, 0.5)
+    generate_streaming_dataset(test_df, severities_fine, "../data-generation/streaming_test_data.csv")
+    
+    print("Generating evaluation streaming dataset (coarse drift)...")
+    severities_coarse = np.arange(0, 11.0, 1.0)
+    generate_streaming_dataset(test_df, severities_coarse, "../data-generation/streaming_eval_data.csv")
 
 if __name__ == '__main__':
     main()

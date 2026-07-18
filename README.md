@@ -9,9 +9,6 @@ It contains a data synthesis script that generates operational data and two PyCa
 This project requires a Python virtual environment to manage dependencies locally (preventing conflicts with global system packages).
 
 1. **Open your terminal** and navigate to the project directory:
-   ```bash
-   cd /Users/jaenilparekh/Documents/cs50/intern-cummins
-   ```
 
 2. **Activate the Virtual Environment**:
    If you have already created the `venv` folder, activate it by running:
@@ -30,10 +27,16 @@ This project requires a Python virtual environment to manage dependencies locall
 
 ## 🚀 How to Run the Pipeline
 
-The scripts must be executed in a specific order, as the models depend on the generated datasets. **Ensure your virtual environment is activated before running any scripts.**
+The scripts must be executed in a specific order, as the models depend on the generated datasets. 
+
+**IMPORTANT: Ensure your virtual environment is activated before running any scripts.**
+```bash
+source venv/bin/activate
+```
+**All `python3` commands below must be run inside the virtual environment.**
 
 ### Step 1: Generate the Synthetic Dataset
-Run the data generation script to synthesize irregular time-series data for 100 engines. This script injects an upward sensor drift bias over simulated operating hours and automatically maps continuous RUL into 4 distinct classes (`perfect`, `good`, `bad`, `worse`).
+Run the data generation script to synthesize irregular time-series data for 100 engines. This script injects an upward sensor drift bias temporally across all engines, and automatically maps continuous RUL into 4 distinct classes (`perfect`, `good`, `bad`, `worse`).
 
 ```bash
 cd data-generation
@@ -74,14 +77,14 @@ python3 validate_env.py
 ```
 
 ### Step 5: Run Baseline Benchmark
-This script evaluates the default PyCaret model's performance on the continuous data stream without retraining.
+This script evaluates the default PyCaret model's performance on the continuous data stream without retraining. It processes the stream in 5-day windows.
 
 ```bash
 python3 baseline_benchmark.py
 ```
 
 ### Step 6: Train the RL Agent
-This script trains a Tabular Q-Learning agent to optimize retraining decisions over multiple episodes.
+This script trains a Tabular Q-Learning agent to optimize retraining decisions over multiple episodes. The agent observes the data in 5-day windows.
 
 ```bash
 python3 tabular_q_agent.py

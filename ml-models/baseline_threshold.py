@@ -25,7 +25,7 @@ class StaticRuleAgent:
         return (mae > self.mae_threshold) or (drift_score > self.drift_threshold)
 
 @dataclass
-class BenchmarkResult:
+class ThresholdResult:
     total_cost_traditional: float
     n_retrains: int
     avg_mae: float
@@ -35,15 +35,14 @@ class BenchmarkResult:
     total_N: int
     batch_log: pd.DataFrame
 
-class BenchmarkSimulator:
-    def __init__(self, df, ref_df, reg_model, agent, batch_size=sc.BATCH_SIZE):
+class ThresholdSimulator:
+    def __init__(self, df, ref_df, reg_model, agent):
         self.df = df
         self.ref_df = ref_df
         self.reg_model = reg_model
         self.agent = agent
-        self.batch_size = batch_size
 
-    def run(self) -> BenchmarkResult:
+    def run(self) -> ThresholdResult:
         sensor_cols = [c for c in self.df.columns if c not in sc.METADATA_COLS and c not in sc.TARGET_COLS and c != 'prediction_label' and c != 'Label' and 'fault_list' not in c]
         
         X_ref = self.ref_df[sensor_cols].values.astype(np.float64)
@@ -56,14 +55,20 @@ class BenchmarkSimulator:
         
         logs = []
         
-        num_batches = len(self.df) // self.batch_size + (1 if len(self.df) % self.batch_size != 0 else 0)
+        unique_days = sorted(self.df['day'].unique())
+        num_windows = len(unique_days) // sc.DAY_WINDOW
         
-        print(f"Running simulation over {num_batches} batches...")
+        print(f"Running simulation over {num_windows} steps (day windows)...")
         
-        for i in range(num_batches):
-            start_idx = i * self.batch_size
-            end_idx = min((i + 1) * self.batch_size, len(self.df))
-            batch = self.df.iloc[start_idx:end_idx].copy()
+        for i in range(num_windows):
+            start_day_idx = i * sc.DAY_WINDOW
+            end_day_idx = min((i + 1) * sc.DAY_WINDOW, len(unique_days))
+            
+            start_day = unique_days[start_day_idx]
+            end_day = unique_days[end_day_idx - 1]
+            
+            mask = (self.df['day'] >= start_day) & (self.df['day'] <= end_day)
+            batch = self.df[mask].copy()
             
             # Predict RUL
             predictions = predict_model(self.reg_model, data=batch, verbose=False)
@@ -73,7 +78,7 @@ class BenchmarkSimulator:
             
             # 2. Evaluate Error
             mae = mean_absolute_error(y_true, y_pred)
-            c_err, M, N = sc.compute_rul_error_cost(y_true, y_pred)
+            c_err, M, N = sc.compute_rul_error_cost(predictions, pred_col=pred_col, actual_col='RUL', engine_col='Engine_number')
             
             # 3. Evaluate Drift
             X_batch = batch[sensor_cols].values.astype(np.float64)
@@ -98,11 +103,12 @@ class BenchmarkSimulator:
                 total_cost += sc.TEC
                 n_retrains += 1
                 
-                print(f"  [Batch {i}] Retraining triggered! (MAE={mae:.2f}, Drift={drift_score:.4f})")
+                print(f"  [Step {i}] Retraining triggered! (MAE={mae:.2f}, Drift={drift_score:.4f})")
                 print(f"  --> Combining historical data and retraining 'lr' model...")
                 
                 # Combine historical data + all test stream seen so far
-                combined_train_df = pd.concat([self.ref_df, self.df.iloc[:end_idx]], ignore_index=True)
+                stream_so_far = self.df[self.df['day'] <= end_day]
+                combined_train_df = pd.concat([self.ref_df, stream_so_far], ignore_index=True)
                 
                 # PyCaret setup and actual training
                 ignore_cols = ['Engine_number', 'trip_id', 'RUL_class']
@@ -139,7 +145,7 @@ class BenchmarkSimulator:
         log_df = pd.DataFrame(logs)
         avg_mae = log_df['mae'].mean()
         
-        return BenchmarkResult(
+        return ThresholdResult(
             total_cost_traditional=total_cost,
             n_retrains=n_retrains,
             avg_mae=avg_mae,
@@ -150,42 +156,49 @@ class BenchmarkSimulator:
             batch_log=log_df
         )
 
-    def plot_timeline(self, result: BenchmarkResult, filename='results/benchmark_timeline.png'):
+    def plot_timeline(self, result: ThresholdResult, filename='results/threshold_timeline.png'):
         log_df = result.batch_log
         
-        fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+        try:
+            plt.style.use('seaborn-v0_8-whitegrid')
+        except:
+            pass
+            
+        fig, axes = plt.subplots(3, 1, figsize=(12, 12), sharex=True)
         
         # Panel 1: MAE
-        axes[0].plot(log_df['batch_idx'], log_df['mae'], label='MAE')
-        axes[0].axhline(y=self.agent.mae_threshold, color='r', linestyle='--', label='MAE Threshold')
+        axes[0].plot(log_df['batch_idx'], log_df['mae'], label='MAE', color='#2ca02c', linewidth=2)
+        axes[0].axhline(y=self.agent.mae_threshold, color='#d62728', linestyle='--', label='MAE Threshold')
         retrain_batches = log_df[log_df['retrain_flag'] == 1]['batch_idx']
         retrain_maes = log_df[log_df['retrain_flag'] == 1]['mae']
-        axes[0].scatter(retrain_batches, retrain_maes, color='red', zorder=5, label='Retrain Triggered')
-        axes[0].set_ylabel('MAE (hrs)')
-        axes[0].legend()
-        axes[0].set_title('MAE per Batch')
+        axes[0].scatter(retrain_batches, retrain_maes, color='#d62728', s=100, zorder=5, label='Retrain Triggered', marker='X')
+        axes[0].set_ylabel('MAE (hrs)', fontsize=12)
+        axes[0].legend(fontsize=10)
+        axes[0].set_title('Threshold Model: MAE per Step (Day Window)', fontsize=14, fontweight='bold')
         
         # Panel 2: Drift
-        axes[1].plot(log_df['batch_idx'], log_df['drift_score'], label='Energy Distance', color='orange')
-        axes[1].axhline(y=self.agent.drift_threshold, color='r', linestyle='--', label='Drift Threshold')
-        axes[1].set_ylabel('Drift Score')
-        axes[1].legend()
-        axes[1].set_title('Drift Distance per Batch')
+        axes[1].plot(log_df['batch_idx'], log_df['drift_score'], label='Energy Distance', color='#ff7f0e', linewidth=2)
+        axes[1].axhline(y=self.agent.drift_threshold, color='#d62728', linestyle='--', label='Drift Threshold')
+        axes[1].set_ylabel('Drift Score', fontsize=12)
+        axes[1].legend(fontsize=10)
+        axes[1].set_title('Threshold Model: Drift Distance per Step', fontsize=14, fontweight='bold')
         
         # Panel 3: Cumulative Cost
-        axes[2].plot(log_df['batch_idx'], log_df['total_cost'], label='Cumulative Cost', color='green')
-        axes[2].set_ylabel('Cost ($)')
-        axes[2].set_xlabel('Batch Index')
-        axes[2].legend()
-        axes[2].set_title('Cumulative Operational Cost')
+        axes[2].plot(log_df['batch_idx'], log_df['total_cost'], label='Cumulative Cost', color='#1f77b4', linewidth=2)
+        axes[2].fill_between(log_df['batch_idx'], log_df['total_cost'], alpha=0.2, color='#1f77b4')
+        axes[2].set_ylabel('Cost ($)', fontsize=12)
+        axes[2].set_xlabel('Step Index (Day Window)', fontsize=12)
+        axes[2].legend(fontsize=10)
+        axes[2].set_title('Threshold Model: Cumulative Operational Cost', fontsize=14, fontweight='bold')
         
         plt.tight_layout()
-        plt.savefig(filename, dpi=300)
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.close()
         print(f"Saved {filename}")
 
 def main():
     print("Loading streaming test and train fleet data...")
-    test_df = pd.read_csv('../data-generation/streaming_test_data.csv')
+    test_df = pd.read_csv('../data-generation/streaming_eval_data.csv')
     train_df = pd.read_csv('../data-generation/train_fleet_data.csv')
     
     print("Loading RUL regressor model...")
@@ -193,12 +206,12 @@ def main():
     
     agent = StaticRuleAgent()
     
-    simulator = BenchmarkSimulator(df=test_df, ref_df=train_df, reg_model=model, agent=agent)
+    simulator = ThresholdSimulator(df=test_df, ref_df=train_df, reg_model=model, agent=agent)
     
     result = simulator.run()
     
     print("\n" + "="*60)
-    print("  BASELINE BENCHMARK (Traditional Retraining)")
+    print("  BASELINE THRESHOLD (Traditional Retraining)")
     print("="*60)
     print(f"  Total Operational Cost : ${result.total_cost_traditional:,.2f}")
     print(f"  ─── Error costs        : ${result.total_error_cost:,.2f}")

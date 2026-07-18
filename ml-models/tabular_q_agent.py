@@ -129,9 +129,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(message)s')
 
     data_dir = os.path.join(os.path.dirname(__file__), "..", "data-generation")
-    df = pd.read_csv(os.path.join(data_dir, "streaming_test_data.csv"))
-    train_split_idx = int(len(df) * 0.8)
-    df_train = df.iloc[:train_split_idx].reset_index(drop=True)
+    df_train = pd.read_csv(os.path.join(data_dir, "streaming_test_data.csv"))
     ref_df = pd.read_csv(os.path.join(data_dir, "train_fleet_data.csv"))
 
     # Register environment if not already registered (to use with gym.make wrappers, though we can use it directly with RecordEpisodeStatistics)

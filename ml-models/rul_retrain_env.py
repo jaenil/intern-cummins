@@ -11,7 +11,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from drift.evaluate_drift_impact import energy_distance
 from shared_config import (
-    UPC, DC, TEC, BATCH_SIZE, MAX_BATCHES,
+    UPC, DC, TEC, DAY_WINDOW, MAX_BATCHES,
     DRIFT_MAX, MAE_MAX, AGE_MAX, REWARD_SCALE
 )
 
@@ -29,18 +29,22 @@ class RULRetrainEnv(gym.Env):
         ref_df: pd.DataFrame,                    
         base_model_path: str,                     
         history_df: Optional[pd.DataFrame] = None, 
-        batch_size: int = BATCH_SIZE,
         render_mode: Optional[str] = None,
+        max_retrain_rows: Optional[int] = 300,   # Cap rows fed to PyCaret during RL training (None = no cap, use for final evaluation)
     ):
         super().__init__()
         
         self.df = df.reset_index(drop=True)
+        # Precompute the sorted unique days for windowing
+        self._unique_days = sorted(self.df['day'].unique())
+        
         self.ref_df = ref_df.reset_index(drop=True)
         self.history_df = history_df.reset_index(drop=True) if history_df is not None else None
         self.base_model_path = base_model_path
         self.working_model_path = f"{self.base_model_path}_temp"
-        self.batch_size = batch_size
+        self.day_window = DAY_WINDOW
         self.render_mode = render_mode
+        self.max_retrain_rows = max_retrain_rows  # None = full data (eval), int = sampled (fast training)
         
         # Action space: 0 = Do Nothing, 1 = Retrain
         self.action_space = gym.spaces.Discrete(2)
@@ -60,6 +64,7 @@ class RULRetrainEnv(gym.Env):
             if c not in ['engine_id', 'cycle', 'RUL', 'severity'] 
             and self.df[c].dtype in [np.float64, np.int64]
             and self.df[c].isna().sum() == 0
+            and c in self.ref_df.columns
             and self.ref_df[c].isna().sum() == 0
         ]
         
@@ -74,7 +79,7 @@ class RULRetrainEnv(gym.Env):
         self._X_ref = self.ref_df[self.feature_cols].sample(n=min(500, len(self.ref_df)), random_state=42).astype(np.float32).values
         
         # 2. Reset tracking variables
-        self._current_batch_idx = 0
+        self._current_step_idx = 0
         self._n_retrains = 0
         self._episode_cost = 0.0
         self._mae_history = []
@@ -88,15 +93,26 @@ class RULRetrainEnv(gym.Env):
         
         return observation, info
 
+    def _get_step_data(self, step_idx: int) -> pd.DataFrame:
+        start_day_idx = step_idx * self.day_window
+        if start_day_idx >= len(self._unique_days):
+            return pd.DataFrame()
+        
+        end_day_idx = min((step_idx + 1) * self.day_window, len(self._unique_days))
+        
+        start_day = self._unique_days[start_day_idx]
+        end_day = self._unique_days[end_day_idx - 1]
+        
+        mask = (self.df['day'] >= start_day) & (self.df['day'] <= end_day)
+        return self.df[mask].copy()
+
     def _get_obs(self) -> np.ndarray:
         # Terminal state protection
-        total_batches = len(self.df) // self.batch_size
-        if self._current_batch_idx >= total_batches:
+        total_steps = len(self._unique_days) // self.day_window
+        if self._current_step_idx >= total_steps:
             return np.zeros(6, dtype=np.float32)
             
-        batch_start = self._current_batch_idx * self.batch_size
-        batch_end = batch_start + self.batch_size
-        X_batch_df = self.df.iloc[batch_start:batch_end]
+        X_batch_df = self._get_step_data(self._current_step_idx)
         
         # Predict on current batch to get MAE
         preds = predict_model(self._reg_model, data=X_batch_df, verbose=False)
@@ -118,7 +134,7 @@ class RULRetrainEnv(gym.Env):
         else:
             f3_delta = 0.0
             
-        age_batches = self._current_batch_idx - self._last_retrain_idx
+        age_batches = self._current_step_idx - self._last_retrain_idx
         f4_age = np.clip(age_batches / AGE_MAX, 0.0, 1.0)
         
         if len(self._mae_history) >= 2:
@@ -139,7 +155,7 @@ class RULRetrainEnv(gym.Env):
 
     def _get_info(self) -> dict:
         return {
-            'batch_idx': getattr(self, '_current_batch_idx', 0),
+            'batch_idx': getattr(self, '_current_step_idx', 0),
             'raw_mae': getattr(self, '_last_raw_mae', 0.0),
             'raw_drift': getattr(self, '_last_raw_drift', 0.0),
             'n_retrains': getattr(self, '_n_retrains', 0),
@@ -150,8 +166,14 @@ class RULRetrainEnv(gym.Env):
         }
 
     def _do_retrain(self) -> None:
-        seen_rows = self._current_batch_idx * self.batch_size
-        stream_so_far = self.df.iloc[:seen_rows]
+        start_day_idx = self._current_step_idx * self.day_window
+        
+        # Collect all rows from day 1 up to the start of the current window
+        if start_day_idx > 0:
+            last_seen_day = self._unique_days[start_day_idx - 1]
+            stream_so_far = self.df[self.df['day'] <= last_seen_day]
+        else:
+            stream_so_far = pd.DataFrame()
         
         dfs_to_concat = [self.ref_df]
         if self.history_df is not None:
@@ -160,6 +182,11 @@ class RULRetrainEnv(gym.Env):
             dfs_to_concat.append(stream_so_far)
         
         combined = pd.concat(dfs_to_concat, ignore_index=True)
+        
+        # POC speed optimisation: sample a capped subset so PyCaret setup is fast during RL training.
+        # Set max_retrain_rows=None in evaluate_agent.py to use the full dataset.
+        if self.max_retrain_rows is not None and len(combined) > self.max_retrain_rows:
+            combined = combined.sample(n=self.max_retrain_rows, random_state=42).reset_index(drop=True)
         
         # PyCaret retraining
         ignore_cols = [c for c in ['Engine_number', 'trip_id', 'RUL_class', 'engine_id', 'cycle', 'severity'] if c in combined.columns]
@@ -170,18 +197,17 @@ class RULRetrainEnv(gym.Env):
         self._reg_model = load_model(self.working_model_path)
         
         # Update physical state
-        self._last_retrain_idx = self._current_batch_idx
+        self._last_retrain_idx = self._current_step_idx
         self._X_ref = combined[self.feature_cols].sample(n=min(500, len(combined)), random_state=42).astype(np.float32).values
 
     def step(self, action: int) -> tuple:
         # Calculate cost BEFORE retrain using current model (Dynamic Baseline)
-        batch_start = self._current_batch_idx * self.batch_size
-        batch_end = batch_start + self.batch_size
-        X_batch_df = self.df.iloc[batch_start:batch_end]
+        X_batch_df = self._get_step_data(self._current_step_idx)
         
         pre_preds = predict_model(self._reg_model, data=X_batch_df, verbose=False)
-        pre_errors = pre_preds['RUL'] - pre_preds['prediction_label']
-        pre_action_cost = np.sum(np.where(pre_errors >= 0, pre_errors * UPC, -pre_errors * DC))
+        
+        from shared_config import compute_rul_error_cost
+        pre_action_cost, _, _ = compute_rul_error_cost(pre_preds)
         
         retrain_cost = 0.0
         post_action_cost = pre_action_cost  # Defaults to same cost if we don't retrain
@@ -193,8 +219,7 @@ class RULRetrainEnv(gym.Env):
             
             # Predict AGAIN on the same batch with the NEW model to see the improvement
             post_preds = predict_model(self._reg_model, data=X_batch_df, verbose=False)
-            post_errors = post_preds['RUL'] - post_preds['prediction_label']
-            post_action_cost = np.sum(np.where(post_errors >= 0, post_errors * UPC, -post_errors * DC))
+            post_action_cost, _, _ = compute_rul_error_cost(post_preds)
             
         step_cost = post_action_cost + retrain_cost
         self._episode_cost += step_cost
@@ -205,12 +230,12 @@ class RULRetrainEnv(gym.Env):
         reward = float(-step_cost / REWARD_SCALE)
         
         # Advance stream
-        self._current_batch_idx += 1
+        self._current_step_idx += 1
         
         # Termination conditions
-        total_batches = len(self.df) // self.batch_size
-        terminated = self._current_batch_idx >= total_batches
-        truncated = self._current_batch_idx >= MAX_BATCHES
+        total_steps = len(self._unique_days) // self.day_window
+        terminated = self._current_step_idx >= total_steps
+        truncated = self._current_step_idx >= MAX_BATCHES
         
         observation = self._get_obs() if not (terminated or truncated) else np.zeros(6, dtype=np.float32)
         info = self._get_info()
@@ -219,7 +244,7 @@ class RULRetrainEnv(gym.Env):
 
     def render(self):
         if self.render_mode == "human":
-            print(f"Batch {self._current_batch_idx} | MAE: {getattr(self, '_last_raw_mae', 0):.2f} | Drift: {getattr(self, '_last_raw_drift', 0):.2f} | Retrains: {self._n_retrains} | Cost: ${self._episode_cost:,.2f}")
+            print(f"Step {self._current_step_idx} | MAE: {getattr(self, '_last_raw_mae', 0):.2f} | Drift: {getattr(self, '_last_raw_drift', 0):.2f} | Retrains: {self._n_retrains} | Cost: ${self._episode_cost:,.2f}")
 
     def close(self):
         pass
