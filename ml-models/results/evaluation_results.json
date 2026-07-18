@@ -1,7 +1,7 @@
 {
-    "baseline_no_retrain_cost": 5700.0,
-    "threshold_model_cost": 7800.0,
-    "rl_agent_cost": 5700.0,
-    "savings_vs_threshold": 2100.0,
+    "baseline_no_retrain_cost": 12300.0,
+    "threshold_model_cost": 15800.0,
+    "rl_agent_cost": 12300.0,
+    "savings_vs_threshold": 3500.0,
     "rl_retrains": 0
 }
