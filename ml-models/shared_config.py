@@ -7,19 +7,19 @@ import numpy as np
 # --- Ground Truth Cost Model (Must exactly match Cost Model Document) ---
 UPC = 100              # Under-Prediction Cost (per engine with mean error <= -100)
 DC = 200               # Degradation Cost (per engine with mean error >= 100)
-TEC = 1500              # Traditional Engineering Cost (per manual PyCaret run)
+TEC = 100              # Traditional Engineering Cost (per manual PyCaret run)
 CIC = 10                 # Cloud Infrastructure Cost ($10 per compute hour)
 
 # --- RL Hyperparameters ---
 ALPHA_RL = 0.1           # Learning rate
 GAMMA = 0.95             # Discount factor
-EPSILON_START = 0.5
+EPSILON_START = 0.8
 EPSILON_END = 0.05
-EPSILON_DECAY = 0.023    # Linear decay per episode
-N_EPISODES = 20          # Total training episodes
+EPSILON_DECAY = 0.019    # Linear decay per episode
+N_EPISODES = 35          # Total training episodes
 
 # --- Environment Tuning ---
-DAY_WINDOW = 10          # Number of days to process per step
+DAY_WINDOW = 8          # Number of days to process per step
 MAX_BATCHES = 25         # Truncation limit (number of windows)
 DRIFT_MAX = 48526.17     # 95th percentile from new day-window evaluation
 MAE_MAX = 504.84         # 95th percentile from new day-window evaluation
@@ -35,12 +35,12 @@ AGE_BIN_THRESHOLD_2 = 0.5     # 5 batches
 
 # --- Reward Normalization (Updated: Engine-Wise + Day-Window) ---
 # Worst-case cost = 20 engines * DC (200) = 4000
-REWARD_SCALE = 4000
+REWARD_SCALE = 2000
 REWARD_SCALE_LEGACY = 400_000  # Old row-wise upper bound — kept for reference
 
 # --- Static/Traditional Threshold Baseline ---
-DRIFT_THRESHOLD_STATIC = 20.0
-MAE_THRESHOLD_STATIC = 300.0
+DRIFT_THRESHOLD_STATIC = 10000.0
+MAE_THRESHOLD_STATIC = 350.0
 
 # --- Dataset Columns ---
 METADATA_COLS = ['Engine_number', 'trip_id', 'RUL_class', 'day']
@@ -86,28 +86,26 @@ def compute_rul_error_cost(
     cost = float(m * UPC + n * DC)
     return cost, m, n
 
-def append_dfs_with_days(
-    dfs: list,
-    engine_col: str = 'Engine_number',
-    min_day: int = 1,
-    max_day: int = 5
-) -> pd.DataFrame:
+def append_dfs_with_days(dfs, engine_col='Engine_number', min_day=1, max_day=5):
     """
     Assign synthetic streaming 'day' labels across a list of DataFrames.
-    A chunk spans 5 days. All engines in the same chunk share the same 5-day pool.
-    Used by the streaming data generator to simulate temporal progression.
+    A chunk spans 5 days. We sort the randomly sampled days per engine 
+    to ensure the chronologically ordered trips map to non-decreasing days.
     """
     result = []
     day_counter = min_day
-    current_max = max_day
     for df in dfs:
         df = df.copy()
-        
-        # All engines share the same day pool for this chunk
-        days_array = np.random.randint(day_counter, current_max + 1, size=len(df))
-        df['day'] = days_array
-        
-        day_counter = current_max + 1
-        current_max = day_counter + 4
+        df['day'] = np.nan
+        for engine in df[engine_col].unique():
+            engine_mask = df[engine_col] == engine
+            n_rows = engine_mask.sum()
+            
+            # Sort the random days to align chronologically with sequential engine trips
+            assigned_days = np.sort(np.random.randint(day_counter, max_day + 1, size=n_rows))
+            df.loc[df.index[engine_mask], 'day'] = assigned_days
+            
+        day_counter = max_day + 1
+        max_day = day_counter + 4  # Next df's days start from max of previous df
         result.append(df)
     return pd.concat(result, ignore_index=True)

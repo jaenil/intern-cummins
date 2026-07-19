@@ -1,4 +1,4 @@
-import pandas as pd
+`import pandas as pd
 import numpy as np
 import sys
 import os
@@ -37,16 +37,18 @@ def generate_streaming_dataset(test_df: pd.DataFrame, severities: np.ndarray, ou
     return streaming_df
 
 def main():
-    print("Loading clean test fleet data...")
+    print("Loading clean test and eval fleet data...")
     test_df = pd.read_csv('../data-generation/test_fleet_data.csv')
+    eval_df = pd.read_csv('../data-generation/eval_fleet_data.csv')
     
-    print("Generating training streaming dataset (fine drift)...")
-    severities_fine = np.arange(0, 10.5, 0.5)
-    generate_streaming_dataset(test_df, severities_fine, "../data-generation/streaming_test_data.csv")
+    # Apply identical drift severities to both test and eval for step-size consistency
+    severities = np.arange(0, 10.5, 0.5)
     
-    print("Generating evaluation streaming dataset (coarse drift)...")
-    severities_coarse = np.arange(0, 11.0, 1.0)
-    generate_streaming_dataset(test_df, severities_coarse, "../data-generation/streaming_eval_data.csv")
+    print("Generating training streaming dataset...")
+    generate_streaming_dataset(test_df, severities, "../data-generation/streaming_test_data.csv")
+    
+    print("Generating evaluation streaming dataset...")
+    generate_streaming_dataset(eval_df, severities, "../data-generation/streaming_eval_data.csv")
 
 if __name__ == '__main__':
     main()

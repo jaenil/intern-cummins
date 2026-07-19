@@ -183,15 +183,19 @@ target_col = ['RUL', 'RUL_class']
 
 df_fleet = df_fleet[metadata_cols + sorted(sensor_cols) + target_col]
 
-train_df = df_fleet[df_fleet['Engine_number'] <= 80]
-test_df = df_fleet[df_fleet['Engine_number'] > 80]
+train_df = df_fleet[df_fleet['Engine_number'] <= 60]
+test_df = df_fleet[(df_fleet['Engine_number'] > 60) & (df_fleet['Engine_number'] <= 80)]
+eval_df = df_fleet[df_fleet['Engine_number'] > 80]
 
 train_path = "train_fleet_data.csv"
 test_path = "test_fleet_data.csv"
+eval_path = "eval_fleet_data.csv"
 
 train_df.to_csv(train_path, index=False)
 test_df.to_csv(test_path, index=False)
+eval_df.to_csv(eval_path, index=False)
 
 print(f"Data generation complete!")
-print(f"Saved Training Set (80 engines): {len(train_df)} trips -> {train_path}")
+print(f"Saved Training Set (60 engines): {len(train_df)} trips -> {train_path}")
 print(f"Saved Testing Set (20 engines): {len(test_df)} trips -> {test_path}")
+print(f"Saved Eval Set (20 engines): {len(eval_df)} trips -> {eval_path}")

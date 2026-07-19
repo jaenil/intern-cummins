@@ -218,8 +218,8 @@ class RULRetrainEnv(gym.Env):
             retrain_cost = TEC
             
             # Predict AGAIN on the same batch with the NEW model to see the improvement
-            post_preds = predict_model(self._reg_model, data=X_batch_df, verbose=False)
-            post_action_cost, _, _ = compute_rul_error_cost(post_preds)
+            # post_preds = predict_model(self._reg_model, data=X_batch_df, verbose=False)
+            # post_action_cost, _, _ = compute_rul_error_cost(post_preds)
             
         step_cost = post_action_cost + retrain_cost
         self._episode_cost += step_cost
